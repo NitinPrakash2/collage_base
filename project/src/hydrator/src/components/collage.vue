@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, nextTick } from 'vue';
 import SellerForm from './SellerForm.vue';
 
 // ── localStorage helpers ──────────────────────────────────────
@@ -264,43 +264,47 @@ const masonryColumns = computed(() => {
 const displayedItems = ref<any[]>([]);
 const isLoadingMore = ref(false);
 const loadTrigger = ref<HTMLElement | null>(null);
+// Track snapshot length of source data to detect seller add/delete/edit
+const sourceSnapshot = ref(0);
 
 const loadMoreData = async () => {
-  // Seller-created tabs show all items directly — no infinite scroll
-  if (sellerCreatedTabs.value.has(activeTab.value)) return;
   if (isLoadingMore.value) return;
+  const categoryData = allData.value[activeTab.value] || [];
+  if (!categoryData.length) return;
   isLoadingMore.value = true;
   await new Promise(resolve => setTimeout(resolve, 800));
-  const categoryData = allData.value[activeTab.value] || [];
-  const newBatch = categoryData.map(item => ({
+  // Re-read in case tab changed during wait
+  const freshData = allData.value[activeTab.value] || [];
+  const newBatch = freshData.map(item => ({
     ...item,
     id: item.id + '_' + Date.now() + Math.random()
   }));
   displayedItems.value = [...displayedItems.value, ...newBatch];
   isLoadingMore.value = false;
+  // If trigger is still visible after loading, keep filling (handles small datasets)
+  await nextTick();
+  if (loadTrigger.value) {
+    const rect = loadTrigger.value.getBoundingClientRect();
+    if (rect.top < window.innerHeight) loadMoreData();
+  }
 };
 
-// Mobile items computed wrapper to apply the 60/40 logic
 const mobileItems = computed(() => calculateMobileLayout(displayedItems.value));
 
 watch(activeTab, () => {
-  // For all tabs reset displayed items first
   displayedItems.value = [];
-  if (sellerCreatedTabs.value.has(activeTab.value)) {
-    // Seller tab: show all items directly, no infinite scroll
-    displayedItems.value = [...(allData.value[activeTab.value] || [])];
-  } else {
-    // API tab: start with empty list, let infinite scroll fill it
-    loadMoreData();
-  }
+  sourceSnapshot.value = (allData.value[activeTab.value] || []).length;
+  loadMoreData();
 }, { immediate: true });
 
-// Re-sync displayed items when allData changes (seller add/edit/delete)
-watch(() => allData.value[activeTab.value], (newList) => {
-  if (newList && sellerCreatedTabs.value.has(activeTab.value)) {
-    displayedItems.value = [...newList];
+// Only reset when source data length changes (add/delete) — not on every deep mutation
+watch(() => (allData.value[activeTab.value] || []).length, (newLen) => {
+  if (newLen !== sourceSnapshot.value) {
+    sourceSnapshot.value = newLen;
+    displayedItems.value = [];
+    loadMoreData();
   }
-}, { deep: true });
+});
 
 onMounted(() => {
   const observer = new IntersectionObserver((entries) => {
