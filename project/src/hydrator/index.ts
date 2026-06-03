@@ -1,6 +1,8 @@
 //import { createObserver } from "../../../u/observe/index";
 import { createApp } from "vue";
 import type { _p_TYP, _$p_TYP } from "../shared/types";
+import PrimeVue from "primevue/config";
+import Aura from "@primevue/themes/aura";
 //set..
 import Comp from "./index.vue";
 
@@ -16,7 +18,7 @@ const index = async (_p:_p_TYP) => {
                 _$p:_$p,
             };
             const app = createApp(Comp, props);
-            //console.log(app);
+            app.use(PrimeVue, { theme: { preset: Aura } });
             
 
 

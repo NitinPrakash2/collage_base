@@ -1,14 +1,51 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
+import SellerForm from './SellerForm.vue';
+
+// ── localStorage helpers ──────────────────────────────────────
+const STORAGE_KEY = 'collage_seller_data';
+
+function loadFromStorage(): { categories: Record<string, any[]>; sellerTabs: string[]; allTabs: string[] } {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Migration: old data had no allTabs — discard it so defaults are used cleanly
+      if (!parsed.allTabs || !parsed.allTabs.length) {
+        localStorage.removeItem(STORAGE_KEY);
+        return { categories: {}, sellerTabs: [], allTabs: [] };
+      }
+      return parsed;
+    }
+  } catch {}
+  return { categories: {}, sellerTabs: [], allTabs: [] };
+}
+
+function saveToStorage(categories: Record<string, any[]>, sellerTabs: string[], allTabs: string[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ categories, sellerTabs, allTabs }));
+  } catch {}
+}
 
 const props = defineProps<{
   mode?: "sticky" | "normal"
 }>();
 const mode = computed(() => props.mode ?? "normal");
 
-// 1. Navigation Tabs
+// ── Load storage first, everything depends on it ─────────────
+const DEFAULT_TABS = ['Men', 'Women', 'Beauty', 'Kids', 'Home', 'himanshu', 'gooo'];
+const DEFAULT_SELLER_TABS = ['himanshu', 'gooo'];
+const _saved = loadFromStorage();
+
+// 1. Navigation Tabs — use saved order (includes renames) or fall back to defaults
 const activeTab = ref('Men');
-const tabs = ['Men', 'Women', 'Beauty', 'Kids', 'Home', 'himanshu', 'gooo'];
+const tabs = ref<string[]>(_saved.allTabs.length ? [..._saved.allTabs] : [...DEFAULT_TABS]);
+
+// sellerCreatedTabs: from storage + default empty tabs still present in current tabs
+const sellerCreatedTabs = ref<Set<string>>(new Set([
+  ..._saved.sellerTabs,
+  ...DEFAULT_SELLER_TABS.filter(t => tabs.value.includes(t)),
+]));
 
 // Auto-Center Tabs
 const tabRefs = ref<HTMLElement[]>([]);
@@ -23,7 +60,7 @@ const selectTab = (tab: string, index: number) => {
 // --- VISUAL ENGINE ---
 const gradients = [
   'bg-gradient-to-br from-orange-50 to-orange-100',
-  'bg-gradient-to-br from-blue-50 to-blue-100', 
+  'bg-gradient-to-br from-blue-50 to-blue-100',
   'bg-gradient-to-br from-purple-50 to-purple-100',
   'bg-gradient-to-br from-emerald-50 to-emerald-100',
   'bg-gradient-to-br from-rose-50 to-rose-100',
@@ -31,14 +68,82 @@ const gradients = [
   'bg-gradient-to-br from-indigo-50 to-violet-100',
   'bg-gradient-to-br from-slate-50 to-gray-100',
 ];
+const getCardStyle = (index: number) => ({ gradient: gradients[index % gradients.length] });
 
-const getCardStyle = (index: number) => {
-  const gradient = gradients[index % gradients.length];
-  return { gradient };
-};
+// Seller Form toggle
+const showForm = ref(false);
+
+// Handle seller submission
+function onAddItem({ category, item }: { category: string; item: any }) {
+  if (!allData.value[category]) {
+    allData.value[category] = [];
+    tabs.value.push(category);
+    sellerCreatedTabs.value.add(category);
+  }
+  allData.value[category].push(item);
+  activeTab.value = category;
+  persistCategory(category);
+  console.log('[Collage] Current category data structure:', JSON.parse(JSON.stringify(allData.value)));
+}
+
+function onDeleteItem({ category, id }: { category: string; id: string }) {
+  if (!allData.value[category]) return;
+  allData.value[category] = allData.value[category].filter(i => i.id !== id);
+  persistCategory(category);
+  console.log(`[Collage] Item deleted: id=${id} from "${category}"`);
+}
+
+function onUpdateItem({ category, item }: { category: string; item: any }) {
+  if (!allData.value[category]) return;
+  const idx = allData.value[category].findIndex(i => i.id === item.id);
+  if (idx !== -1) allData.value[category][idx] = item;
+  persistCategory(category);
+  console.log(`[Collage] Item updated in "${category}":`, item);
+}
+
+function onRenameCategory({ oldName, newName }: { oldName: string; newName: string }) {
+  if (!newName.trim() || oldName === newName) return;
+  // Use full object replacement so Vue detects the key change reactively
+  const entries = Object.entries(allData.value);
+  const renamed: Record<string, any[]> = {};
+  for (const [k, v] of entries) {
+    renamed[k === oldName ? newName : k] = v;
+  }
+  allData.value = renamed;
+  // Update tabs list
+  const idx = tabs.value.indexOf(oldName);
+  if (idx !== -1) tabs.value[idx] = newName;
+  // Update sellerCreatedTabs if applicable
+  if (sellerCreatedTabs.value.has(oldName)) {
+    sellerCreatedTabs.value.delete(oldName);
+    sellerCreatedTabs.value.add(newName);
+  }
+  // Update active tab if needed
+  if (activeTab.value === oldName) activeTab.value = newName;
+  persistSeller();
+  console.log(`[Collage] Category renamed: "${oldName}" → "${newName}"`);
+}
 
 // --- DATA SOURCE ---
-const allData: Record<string, any[]> = {
+// Separate storage key for static category overrides
+const STATIC_KEY = 'collage_static_overrides';
+function loadStaticOverrides(): Record<string, any[]> {
+  try {
+    const raw = localStorage.getItem(STATIC_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+}
+function saveStaticOverride(category: string, items: any[]) {
+  try {
+    const overrides = loadStaticOverrides();
+    overrides[category] = items;
+    localStorage.setItem(STATIC_KEY, JSON.stringify(overrides));
+  } catch {}
+}
+
+// Static API data first, saved seller categories then static overrides on top
+const allData = ref<Record<string, any[]>>({
   Men: [
     { id: 'm1', title: 'Sweatpants', image: 'https://images.unsplash.com/photo-1552902865-b72c031ac5ea?auto=format&fit=crop&q=80&w=500' },
     { id: 'm2', title: 'T-Shirts', image: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&q=80&w=500' },
@@ -77,8 +182,26 @@ const allData: Record<string, any[]> = {
     { id: 'h3', title: 'Plants', image: 'https://images.unsplash.com/photo-1485955900006-10f4d324d411?auto=format&fit=crop&q=80&w=500' },
     { id: 'h4', title: 'Chairs', image: 'https://images.unsplash.com/photo-1598300042247-d088f8ab3a91?auto=format&fit=crop&q=80&w=500' },
     { id: 'h5', title: 'Lighting', image: 'https://images.unsplash.com/photo-1507473888900-52e1adad5420?auto=format&fit=crop&q=80&w=500' },
-  ]
-};
+  ],
+  himanshu: [],
+  gooo: [],
+  ..._saved.categories,       // seller-created tabs (restored)
+  ...loadStaticOverrides(),   // static tab overrides (items added/edited/deleted on Men, Women etc.)
+});
+
+function persistSeller() {
+  const sellerOnly: Record<string, any[]> = {};
+  sellerCreatedTabs.value.forEach(t => { sellerOnly[t] = allData.value[t] ?? []; });
+  saveToStorage(sellerOnly, [...sellerCreatedTabs.value], [...tabs.value]);
+}
+
+function persistCategory(category: string) {
+  if (sellerCreatedTabs.value.has(category)) {
+    persistSeller();
+  } else {
+    saveStaticOverride(category, allData.value[category] ?? []);
+  }
+}
 
 // --- DATA PREPARATION ---
 
@@ -143,20 +266,17 @@ const isLoadingMore = ref(false);
 const loadTrigger = ref<HTMLElement | null>(null);
 
 const loadMoreData = async () => {
+  // Seller-created tabs show all items directly — no infinite scroll
+  if (sellerCreatedTabs.value.has(activeTab.value)) return;
   if (isLoadingMore.value) return;
   isLoadingMore.value = true;
   await new Promise(resolve => setTimeout(resolve, 800));
-  const categoryData = allData[activeTab.value] || [];
+  const categoryData = allData.value[activeTab.value] || [];
   const newBatch = categoryData.map(item => ({
     ...item,
     id: item.id + '_' + Date.now() + Math.random()
   }));
-  // We strictly append raw data here. 
-  // The 'masonryColumns' computed prop handles the PC sorting automatically.
-  // The 'calculateMobileLayout' is called in the template or via a computed if needed, 
-  // but for simplicity we'll just map it when setting value.
-  const rawList = [...displayedItems.value, ...newBatch];
-  displayedItems.value = rawList; 
+  displayedItems.value = [...displayedItems.value, ...newBatch];
   isLoadingMore.value = false;
 };
 
@@ -164,8 +284,23 @@ const loadMoreData = async () => {
 const mobileItems = computed(() => calculateMobileLayout(displayedItems.value));
 
 watch(activeTab, () => {
-  displayedItems.value = [...(allData[activeTab.value] || [])];
+  // For all tabs reset displayed items first
+  displayedItems.value = [];
+  if (sellerCreatedTabs.value.has(activeTab.value)) {
+    // Seller tab: show all items directly, no infinite scroll
+    displayedItems.value = [...(allData.value[activeTab.value] || [])];
+  } else {
+    // API tab: start with empty list, let infinite scroll fill it
+    loadMoreData();
+  }
 }, { immediate: true });
+
+// Re-sync displayed items when allData changes (seller add/edit/delete)
+watch(() => allData.value[activeTab.value], (newList) => {
+  if (newList && sellerCreatedTabs.value.has(activeTab.value)) {
+    displayedItems.value = [...newList];
+  }
+}, { deep: true });
 
 onMounted(() => {
   const observer = new IntersectionObserver((entries) => {
@@ -178,6 +313,29 @@ onMounted(() => {
 
 <template>
   <div class="min-h-screen bg-gray-50 dark:bg-black text-gray-900 dark:text-gray-100 font-sans selection:bg-pink-500 selection:text-white">
+
+    <!-- Seller Form Panel -->
+    <div class="max-w-[1920px] mx-auto px-4 md:px-8 pt-4">
+      <button
+        @click="showForm = !showForm"
+        class="mb-3 px-5 py-2 rounded-full bg-black dark:bg-white text-white dark:text-black text-xs font-bold tracking-wider hover:opacity-70 transition"
+      >
+        {{ showForm ? '✕ Close Seller Form' : '+ Seller: Add Item' }}
+      </button>
+      <Transition name="slide">
+        <SellerForm
+          v-if="showForm"
+          :allData="allData"
+          :tabs="tabs"
+          :sellerCreatedTabs="sellerCreatedTabs"
+          @add-item="onAddItem"
+          @delete-item="onDeleteItem"
+          @update-item="onUpdateItem"
+          @rename-category="onRenameCategory"
+          class="mb-6"
+        />
+      </Transition>
+    </div>
 
     <nav :class="['bg-white/80 dark:bg-black/80 backdrop-blur-xl border-b border-gray-200 dark:border-gray-800 transition-all duration-300', mode === 'sticky' ? 'sticky top-0 z-50' : 'relative']">
       <div class="max-w-[1920px] mx-auto px-4 md:px-8">
@@ -283,4 +441,7 @@ onMounted(() => {
 .stagger-leave-active { transition: all 0.5s cubic-bezier(0.55, 0, 0.1, 1); }
 .stagger-enter-from,
 .stagger-leave-to { opacity: 0; transform: scale(0.9) translateY(20px); }
+
+.slide-enter-active, .slide-leave-active { transition: all 0.35s ease; }
+.slide-enter-from, .slide-leave-to { opacity: 0; transform: translateY(-12px); }
 </style>
